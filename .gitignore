@@ -4,8 +4,14 @@
 # Jupyter Notebook
 **/.ipynb_checkpoints/
 src/**/.ipynb
+**/.jupyter
 
 # Virtual Environment
 .venv/
 env/
 venv/
+
+# DataSet
+/data/raw
+/data/processed/sdo
+/data/processed/solar_flare_2020
