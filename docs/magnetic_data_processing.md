@@ -1,105 +1,167 @@
-## Data Processing Report for Solar Flare Prediction Model
+# Data Processing and Feature Engineering Report
 
-### 1. Executive Summary
+## 1. Executive Summary
 
-This report presents the complete preprocessing pipeline developed for the **Solar Flare Prediction Model**.  
-The pipeline was applied to the raw solar magnetic field dataset, consisting of **35 features across 95 Parquet files (≈5 GB total: train + test)**.  
-Exploratory Data Analysis (EDA) identified several structural and statistical challenges: a **non-unique index**, **panel data organization**, **highly skewed feature distributions**, and **strong multicollinearity** among variables.
+This report details the complete preprocessing and feature engineering pipeline designed for the **Solar Flare Prediction Model**.  
+The pipeline operates on two primary datasets — the **magnetic parameter time-series data** from the **IEEE Big Data Cup 2020** and the **SDO/HMI image dataset** from complementary Kaggle sources.
 
-The goal of this preprocessing stage is to convert the raw input into a **clean, feature-engineered, and model-ready dataset** suitable for machine learning applications.  
-The process, implemented using **Dask** for scalability, draws directly from EDA insights. The final output is a compact, 10-column dataset optimized for the modeling phase.
+The magnetic dataset comprises **≈95 Parquet files (~5 GB)**, each containing solar active region (AR) magnetic field measurements over time, while the SDO image dataset provides multi-channel images of the solar surface. Together, these datasets form the basis for building predictive models for solar flare activity.
 
----
+Exploratory Data Analysis (EDA) revealed critical structural and statistical issues in the raw magnetic data:
 
-### 2. Processing Pipeline: Methodology and Justification
+* **Structural Challenges:**  
+  - Non-unique DataFrame indices and a **panel (multi-sequence) structure**, where each `record_id` represents an independent time-series sequence.  
+  - Missing or inconsistent temporal ordering within certain groups.  
 
-All transformations were carried out by the `process_magnetic_data.py` script on both the training and testing datasets.  
-The pipeline is organized into two major phases: **Data Stabilization and Structuring**, followed by **Feature Transformation and Selection**.
+* **Statistical Challenges:**  
+  - Severe **right-skew** in key flux and energy parameters (`USFLUX`, `TOTPOT`, etc.).  
+  - Strong **multicollinearity**, with correlation coefficients > 0.9 among clusters of related variables.
 
-#### **Phase 1: Data Stabilization and Structuring**
-
-These steps ensure data consistency, integrity, and computational efficiency across distributed processing.
-
-- **Step 1.1 — Index Resetting**  
-  The dataset was reindexed to remove duplicate labels caused by merging multiple Parquet files. This resolved issues with non-unique indices that previously led to computation errors, ensuring a stable DataFrame structure.
-
-- **Step 1.2 — Sorting by Group Identifier**  
-  The data was sorted by `record_id`, where each `record_id` represents a unique time-series segment. Sorting improved performance by minimizing data shuffling during group operations, a crucial optimization for distributed computation.
-
-- **Step 1.3 — Sequence ID Creation (`seq_id`)**  
-  A new column `seq_id` was added to assign a sequential time-step index (0, 1, 2, …) to each measurement within its respective `record_id`.  
-  This transformation explicitly encodes the temporal order necessary for time-series analysis and feature engineering.
+The preprocessing pipeline — implemented with **Dask** for distributed and memory-efficient processing — addresses these challenges systematically and produces a **14-feature refined dataset**, ready for downstream modeling.
 
 ---
 
-#### **Phase 2: Feature Transformation and Selection**
+## 2. Dataset Overview
 
-This phase modifies and refines features based on their statistical characteristics and relationships identified during EDA.
+### 2.1 Magnetic Field Data (IEEE Big Data Cup 2020)
 
-- **Step 2.1 — Logarithmic Transformation of Skewed Features**  
-  Several features exhibited strong right-skewed distributions. Applying a logarithmic transformation reduced skewness and stabilized variance, improving the behavior of downstream models that assume normally distributed inputs.
+The dataset consists of four large JSON files:
 
-- **Step 2.2 — Representative Feature Selection**  
-  High correlations (often > 0.9) were observed among many features, forming distinct multicollinearity clusters.  
-  To avoid redundancy and improve model stability, representative features were selected from each cluster, resulting in a focused and interpretable subset of 10 columns.
+- `train_partition1_data.json`  
+- `train_partition2_data.json`  
+- `train_partition3_data.json`  
+- `test_4_5_data.json`
 
----
+Collectively, these amount to **≈17 GB** of time-series magnetic parameter data.  
+Each record corresponds to a unique solar active region observed by the **SDO/HMI instrument**, with associated physical parameters and a labeled flare class.
 
-### 3. Feature Decisions Summary
-
-| Original Column | Final Status | Justification |
-|-----------------|--------------|----------------|
-| `record_id` | **Kept** | Serves as the unique sequence identifier for each time-series instance. |
-| `label` | **Kept** | Retained as the target variable for classification. |
-| `USFLUX` | **Transformed & Kept** as `USFLUX_log` | Core measure of magnetic flux; log-transformed due to high skew. |
-| `TOTPOT` | **Transformed & Kept** as `TOTPOT_log` | Represents total magnetic energy; log-transformed and selected as the second key representative of the energy cluster. |
-| `PIL_LEN` | **Transformed & Kept** as `PIL_LEN_log` | Captures the polarity inversion line length; physically distinct and log-transformed. |
-| `MEANSHR` | **Kept** | Represents magnetic shear and field complexity; exhibits moderate distribution and strong interpretability. |
-| `TOTFZ` | **Kept** | Left-skewed feature providing complementary distributional information. |
-| `EPSZ` | **Kept** | Normalized parameter capturing unique information not present in other features. |
-| `R_VALUE` | **Kept** | Zero-inflated feature; retained due to potential predictive value of rare non-zero events. |
-| `seq_id` | **Created & Kept** | Explicitly encodes temporal ordering within each time-series group. |
-
-All other features were excluded based on redundancy, low variance, or high correlation with selected representatives.  
-Certain features such as `TOTUSJH`, `TOTBSQ`, and `ABSNJZH` were removed due to excessive multicollinearity, while others such as `XR_MAX` were excluded to prevent potential **label leakage**, ensuring the model learns only from pre-flare magnetic conditions.
+**Source:** [IEEE Big Data Cup 2020 – Solar Flare Forecasting Data](https://dmlab.cs.gsu.edu/solar/data/data-comp-2020/)  
+**Kaggle Mirror:** [Stealth Technologies – Solar Flares Dataset](https://www.kaggle.com/datasets/stealthtechnologies/solar-flares-dataset)
 
 ---
 
-### 4. Addendum: Scaling and Encoding Policy
+### 2.2 SDO/HMI Image Dataset
 
-#### **Purpose**
+The image dataset complements the magnetic data with raw solar imagery used for visual pattern extraction.  
+It can be obtained from:
 
-Two standard preprocessing steps — **Feature Scaling** and **Categorical Encoding** — were **intentionally excluded** from the `process_magnetic_data.py` pipeline.  
-These operations are performed during the **modeling phase**, not during generic data preparation, to avoid **data leakage** that could compromise model integrity.
+- [SDO Benchmark (FHNW I4DS)](https://www.kaggle.com/datasets/fhnw-i4ds/sdobenchmark)
 
----
+**Important Note on Download Duplication:**
 
-#### **4.1 Feature Scaling**
-
-Scaling involves learning parameters such as the mean and standard deviation from the data.  
-If performed before the train-test split, scaling would incorporate information from the test set, allowing the model to “see” data it should not access during training.  
-To prevent this, scaling must occur **only after** splitting the dataset, using statistics derived **solely from the training set**.  
-This ensures fair evaluation and generalization to unseen data.
+When downloading the SDO image dataset, the pipeline retrieves the same files **four times**, due to case variations in filenames (e.g., `image_001.FITS`, `IMAGE_001.FITS`, etc.).  
+As a result, users should **expect ~2.8 GB × 4 = ≈11.2 GB** of image data after full download.
 
 ---
 
-#### **4.2 Categorical Encoding**
+### 2.3 Loader and Preprocessing Scripts
 
-The target labels (e.g., flare classes ‘C’, ‘M’, ‘X’) must be numerically encoded for machine learning algorithms.  
-However, the mapping from string labels to numeric codes must be learned **only from the training labels** to guarantee consistent encoding and decoding.  
-Performing encoding prior to splitting could introduce unseen class information from the test set, leading to inconsistent mappings and data leakage.
+* **`loaders/`**  
+  - Responsible for **downloading and verifying** the magnetic and SDO datasets.  
+  - Handles network retries, file checksums, and extraction.  
+
+* **`sdo_preprocess.py`**  
+  - Generates a **metadata index** for the image dataset, linking each image to its corresponding magnetic record (`record_id`) and flare label.  
+  - Produces structured metadata files used for efficient downstream model loading and alignment between image and magnetic data.
 
 ---
 
-### 5. Conclusion
+## 3. Exploratory Data Analysis (EDA)
 
-The `process_magnetic_data.py` pipeline delivers a **robust, consistent, and model-ready dataset** with 10 statistically balanced and physically meaningful features.  
-The pipeline ensures:
-- Stable indexing and structured time-series organization  
-- Controlled feature transformation and pruning  
-- Prevention of redundancy and multicollinearity  
-- Strict separation between preprocessing and modeling stages  
+EDA was conducted using a subset of the magnetic dataset and visualized via correlation matrices and feature distributions.
 
-By deferring **scaling** and **encoding** to the modeling phase, the workflow adheres to best practices in machine learning, ensuring **data integrity**, **reproducibility**, and **reliable model performance**.
+- **Raw Correlation Matrix:**  
+ ![Raw Correlation Matrix](https://raw.githubusercontent.com/Zen-Nightshade/Solar-Flare-Prediction/main/figures/magnetic_data_EDA/raw_plots/correlation_matrix.png)
 
-The resulting dataset is now fully prepared for the next stage: training and evaluation of the Solar Flare Prediction Model.
+
+  The raw data exhibits heavy feature redundancy, with large clusters of features being highly correlated (e.g., `TOTUSJH`, `TOTBSQ`, and `USFLUX`).
+
+- **Processed Correlation Matrix:**  
+  ![Processed Correlation Matrix](https://raw.githubusercontent.com/Zen-Nightshade/Solar-Flare-Prediction/main/figures/magnetic_data_EDA/transformed_plots/correlation_matrix.png)
+
+  After transformation and selection, multicollinearity is substantially reduced, resulting in a more orthogonal feature space suitable for modeling.
+
+Additional figures and distribution plots (available in [this directory](https://github.com/Zen-Nightshade/Solar-Flare-Prediction/blob/main/figures/magnetic_data_EDA/)) further illustrate data normalization and feature distribution changes after processing.
+
+---
+
+## 4. Processing Pipeline Overview
+
+Implemented in `process_magnetic_data.py`, the preprocessing pipeline follows a modular, multi-phase approach:
+
+### **Phase 1 — Data Stabilization and Structuring**
+1. **Index Resetting** to remove duplicate indices.  
+2. **Sorting by `record_id`** to preserve time continuity.  
+3. **Sequence ID Creation (`seq_id`)** to explicitly index time steps within each sequence.
+
+### **Phase 2 — Foundational Transformations**
+- **Logarithmic Transformations** (`log(1+x)`) applied to right-skewed variables such as `TOTPOT`, `USFLUX`, and `PIL_LEN`.
+
+### **Phase 3 — Advanced Time-Series Feature Engineering**
+Group-wise operations on each `record_id` yield:
+- **Rolling Features:** 5-step moving averages and standard deviations capturing local trends and volatility.  
+- **Difference Features:** 1-step temporal derivatives measuring immediate rate-of-change.  
+- **Lag Features:** 3-step lags introducing short-term temporal memory.
+
+### **Phase 4 — Feature Selection and Cleanup**
+- Redundant features removed using correlation thresholds and domain-driven selection.  
+- Missing values introduced by rolling/lag operations filled with zero.
+
+---
+
+## 5. Final Feature Set
+
+| Original Column(s) | Final Feature | Status | Description |
+|--------------------|---------------|---------|-------------|
+| `record_id` | `record_id` | Kept | Unique time-series group identifier |
+| `label` | `label` | Kept | Flare class (C, M, X, etc.) |
+| `USFLUX` | `USFLUX_log` | Transformed | Log-scaled magnetic flux |
+| `TOTPOT` | `TOTPOT_log` | Transformed | Log-scaled magnetic energy |
+| `PIL_LEN` | `PIL_LEN_log` | Transformed | Log-scaled polarity inversion line length |
+| `MEANSHR` | `MEANSHR` | Kept | Magnetic shear magnitude |
+| `TOTFZ` | `TOTFZ` | Kept | Magnetic flux imbalance |
+| `EPSZ` | `EPSZ` | Kept | Normalized flux imbalance |
+| `R_VALUE` | `R_VALUE` | Kept | Zero-inflated rare-activity indicator |
+| Grouped by `record_id` | `seq_id` | Created | Temporal step index |
+| `USFLUX_log` | `USFLUX_log_roll_mean5` | Created | 5-step rolling mean (trend) |
+| `USFLUX_log` | `USFLUX_log_roll_std5` | Created | 5-step rolling standard deviation (volatility) |
+| `TOTPOT_log` | `TOTPOT_log_diff1` | Created | 1-step difference (instantaneous change) |
+| `MEANSHR` | `MEANSHR_lag3` | Created | 3-step lag (temporal memory) |
+
+All other 28 raw parameters were excluded to minimize redundancy and ensure interpretability.
+
+---
+
+## 6. Deferred Operations: Scaling and Encoding
+
+Two key preprocessing steps — **Feature Scaling** and **Categorical Encoding** — are **intentionally deferred** to the modeling phase (`train.py`).  
+This prevents **data leakage**, ensuring the model’s performance metrics remain valid.  
+Scaling and encoding must be **fitted on training data only** and reused consistently across validation and test splits.
+
+---
+
+## 7. Storage and Split Strategy
+
+The processed data is stored under:
+```
+data/processed/magnetic_data/
+```
+with partitions:
+- `train`
+- `dev`
+- `test`
+- `holdout_test`
+
+Each partition is independently processed to preserve isolation between data subsets.
+
+---
+
+## 8. Conclusion
+
+The magnetic data processing pipeline successfully transforms complex, high-dimensional, and correlated raw solar data into a **compact, interpretable, and model-ready dataset**.  
+The result is a 14-feature dataset enriched with meaningful temporal descriptors — trend, volatility, rate-of-change, and short-term memory — forming a robust foundation for solar flare prediction.
+
+The loader and SDO preprocessing components extend this ecosystem by integrating metadata and imagery, enabling multimodal analysis.  
+Researchers should **prepare for approximately 17 GB (magnetic data) + 11.2 GB (image data)** during full replication of the workflow.
+
+This modular and scalable design ensures reproducibility, computational efficiency, and scientific rigor for both time-series and image-based solar flare modeling.
