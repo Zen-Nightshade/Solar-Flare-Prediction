@@ -13,5 +13,6 @@ venv/
 
 # DataSet
 /data/raw
-/data/processed/sdo
-/data/processed/solar_flare_2020
+/data/preprocessed/sdo
+/data/preprocessed/solar_flare_2020
+/data/processed/magnetic_data
