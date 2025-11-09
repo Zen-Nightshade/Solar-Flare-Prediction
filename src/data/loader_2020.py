@@ -8,14 +8,14 @@ from tqdm import tqdm
 # The original link is "https://www.kaggle.com/competitions/bigdata2020-flare-prediction/data"
 base_url = "https://dmlab.cs.gsu.edu/solar/data/data-comp-2020/"
 files = [
-    "test_4_5_data.json",
+    # "test_4_5_data.json",
     "train_partition1_data.json",
-    "train_partition2_data.json",
+    "train_partition2_data.json"
     "train_partition3_data.json"
 ]
 
 filenames = [
-    "test_4_5_data.json",
+    # "test_4_5_data.json",
     "train_partition1_data.json",
     "train_partition2_data.json",
     "train_partition3_data.json"
