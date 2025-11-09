@@ -1,6 +1,6 @@
 # Solar Flare Data Processing Pipeline
 
-This directory contains all scripts used to **download, preprocess, and transform** the solar flare datasets into a structured, model-ready format.
+This directory contains all scripts used to **download, preprocess, augment, and transform** the solar flare datasets into a structured, model-ready format.
 The pipeline integrates both **magnetic field time-series data** and **SDO image data**, aligning them for multimodal flare prediction tasks.
 
 ---
@@ -11,12 +11,25 @@ The pipeline manages the complete data preparation lifecycle — from raw downlo
 
 **Scripts in this directory:**
 ```
+# Data Acquisition
 loader_2020.py
 loader_stealth.py
 loader_sdo.py
+
+# Initial Conversion & Cleaning
 preprocess_2020.py
 preprocess_sdo.py
+
+# Feature Engineering
 process_magnetic_data.py
+
+# Augmentation & Balancing
+magnetic_augmentor.py
+
+# Diagnostic & Utility Scripts
+check_corrupted_distribution.py
+check_magnetic_record_counts.py
+temp.py
 ```
 
 ---
@@ -24,18 +37,22 @@ process_magnetic_data.py
 ## Workflow Summary
 
 1.  **Download Phase (Loaders)**
-    Downloads raw datasets from their official or Kaggle sources and organizes them under `data/raw/`.
-    - `loader_2020.py`: Downloads the 2020 magnetic field dataset (IEEE Big Data Cup 2020).
-    - `loader_stealth.py`: Downloads additional stealth event magnetic field data.
-    - `loader_sdo.py`: Downloads the SDO image dataset and associated metadata (SDOBenchmark).
+    Downloads raw datasets and organizes them under `data/raw/`.
+    - `loader_2020.py`: Downloads the 2020 magnetic field dataset.
+    - `loader_stealth.py`: Downloads additional stealth event data.
+    - `loader_sdo.py`: Downloads the SDO image dataset.
 
-2.  **Preprocessing Phase**
-    Converts raw JSON/CSV data and image metadata into clean, Dask-compatible Parquet and CSV formats.
-    - `preprocess_2020.py`: Processes magnetic field data.
+2.  **Preprocessing Phase (Initial Conversion)**
+    Converts raw source files into a clean, Dask-compatible Parquet format.
+    - `preprocess_2020.py`: Processes raw magnetic field JSON data, **resolving record_id collisions by renumbering duplicates.**
     - `preprocess_sdo.py`: Builds structured metadata for SDO image data.
 
 3.  **Feature Engineering Phase**
-    - `process_magnetic_data.py`: Performs log transforms, time indexing, feature selection, **and advanced time-series feature engineering** to create a model-ready dataset.
+    - `process_magnetic_data.py`: Performs log transforms, time indexing, feature selection, and **advanced time-series feature engineering** to create the final model-ready dataset.
+
+4.  **Data Augmentation Phase (for Magnetic Data)**
+    Addresses severe class imbalance in the training set.
+    - `magnetic_augmentor.py`: Applies a multi-step strategy of **synthetic data generation** (scaling, warping), **oversampling** (duplication), and **undersampling** to create a balanced training dataset.
 
 ---
 
@@ -43,7 +60,7 @@ process_magnetic_data.py
 
 | Dataset | Description | Source |
 | :--- | :--- | :--- |
-| **Solar Flare Prediction from Time Series Data (2020)** | Time-series magnetic field parameters from SDO/HMI vector magnetograms, labeled with flare intensity. | [GSU Dataset (IEEE Big Data Cup 2020)](https://dmlab.cs.gsu.edu/solar/data/data-comp-2020/) |
+| **Solar Flare Prediction from Time Series Data (2020)** | Time-series magnetic field parameters from SDO/HMI vector magnetograms. | [GSU Dataset (IEEE Big Data Cup 2020)](https://dmlab.cs.gsu.edu/solar/data/data-comp-2020/) |
 | **SDOBenchmark** | Image-sequence dataset of active solar regions for flare prediction. | [Kaggle – SDOBenchmark](https://www.kaggle.com/datasets/fhnw-i4ds/sdobenchmark) |
 | **Stealth Dataset** *(optional)* | Supplemental magnetic field observations for stealth CMEs. | [Kaggle – Stealth Technologies](https://www.kaggle.com/datasets/stealthtechnologies/solar-flares-dataset) |
 
@@ -52,9 +69,6 @@ process_magnetic_data.py
 ## Download Scripts
 
 ### `loader_2020.py`, `loader_stealth.py`, `loader_sdo.py`
-
-**Purpose:**
-Automate the dataset downloads and ensure consistent directory structures.
 
 **Details:**
 
@@ -95,46 +109,53 @@ data/raw/
 ### `preprocess_2020.py`
 
 **Purpose:**
-Converts the raw 17 GB magnetic field JSON data into efficient, structured Parquet files for Dask-based processing.
+Converts the raw magnetic field JSON data into efficient, structured Parquet files, **while correcting a critical data integrity issue in the source data.**
 
 **Input:**
-Four JSON files from the 2020 dataset (`train_partition1_data.json`, …, `test_4_5_data.json`).
+Four JSON files from the 2020 dataset (`train_partition1_data.json`, etc.).
 
 **Process:**
-1.  Reads and normalizes the JSON structure into tabular format.
-2.  Cleans, validates, and splits data into training and testing partitions.
-3.  Saves results as **chunked Parquet files**.
+1.  Reads each JSON file line-by-line.
+2.  **Handles `record_id` Collisions:** The source data contains overlapping `record_id`s across the training partition files. This script identifies these collisions.
+    - The first time a `record_id` is encountered, it is processed and saved normally.
+    - On subsequent encounters, the script assumes it's a new, independent observation with an incorrect ID. It assigns a **new, unique, sequential integer ID** (starting from 171038) to preserve the data without creating duplicates.
+3.  **Validates and Cleans:** Each record is validated to ensure it contains exactly 60 time steps.
+4.  **Adds Identifiers:** Creates a globally unique `safe_index`.
+5.  Saves results as **chunked Parquet files**.
 
 **Output:**
 ```
-data/preprocessed/solar_flare_2020/train/
-data/preprocessed/solar_flare_2020/test/
+data/preprocessed/train/
+data/preprocessed/test/
 ```
-Each split contains multiple Parquet files (≈95 total, ~5 GB combined).
+The output is a clean dataset where every `record_id` is guaranteed to be unique.
 
 ---
 
 ### `preprocess_sdo.py`
 
 **Purpose:**
-Processes the SDO (Solar Dynamics Observatory) **image metadata** and builds a structured CSV index mapping each image sequence to its corresponding label and disk path.
+Processes the SDO (Solar Dynamics Observatory) **image metadata** and builds a structured CSV index mapping each image sequence to its corresponding label and disk path.  
 
 **Input:**
 `meta_data.csv` and the image folder hierarchy downloaded by `loader_sdo.py`.
 
 **Process:**
-1.  Reads the raw `meta_data.csv`.
-2.  Parses unique IDs to extract **Active Region (AR)** numbers and timestamps.
-3.  Derives the **flare label** (`X`, `M`, `C`, `Q`) based on `peak_flux`.
-4.  Constructs the **absolute file paths** to each image sequence.
-5.  Verifies dataset integrity to ensure image and metadata consistency.
-6.  Outputs cleaned metadata CSVs.
+1. Reads the raw `meta_data.csv`.
+2. Parses unique IDs to extract **Active Region (AR)** numbers and timestamps.
+3. Derives the **flare label** (`X`, `M`, `C`, `Q`) based on `peak_flux`.
+4. Constructs the **absolute file paths** to each image sequence.
+5. Verifies dataset integrity to ensure image and metadata consistency.
+6. Outputs cleaned metadata CSVs.
 
 **Output:**
+
 ```
+
 data/processed/sdo/
 ├── train_metadata.csv
 └── test_metadata.csv
+
 ```
 
 ---
@@ -144,22 +165,20 @@ data/processed/sdo/
 ### `process_magnetic_data.py`
 
 **Purpose:**
-Transforms the cleaned magnetic field Parquet data into a **final, feature-rich dataset** suitable for training time-series-aware machine learning models. This script is heavily optimized for memory efficiency on systems with 16-32GB of RAM.
+Transforms the augmented magnetic field data into a final, feature-rich dataset for model training. Optimized for memory efficiency.
 
 **Workflow Summary:**
-1.  **Data Splitting:** The raw training data is first split by `record_id` into `train`, `dev`, and `test` sets (98% / 1% / 1% ratio). The original `test` data is treated as a separate `holdout_test` set. This is done *before* processing to manage memory.
-2.  **Stabilization:** Each data split is independently stabilized by resetting its index and sorting by `record_id` to prepare for grouped operations.
-3.  **Time-Step Generation:** A `seq_id` column is created to provide a unique time-step (0, 1, 2...) for each measurement within a `record_id`.
-4.  **Log Transformations:** Applies `log(1+x)` normalization to a predefined list of highly skewed features identified during EDA (e.g., `TOTPOT`, `USFLUX`).
-5.  **Advanced Time-Series Feature Engineering:** This is the core feature creation step. The script calculates:
-    *   **Rolling Means/Stdevs:** (`USFLUX_log_roll_mean5`, `USFLUX_log_roll_std5`) to capture recent trends and volatility.
-    *   **Rate of Change:** (`TOTPOT_log_diff1`) to measure step-to-step changes in energy.
-    *   **Lag Features:** (`MEANSHR_lag3`) to provide the model with a short-term memory of past states.
-6.  **Feature Selection:** The final dataset is pruned to a curated list of foundational and engineered features, removing redundant variables.
-7.  **Save Outputs:** Each processed data split (`train`, `dev`, `test`, `holdout_test`) is saved to its own directory under `data/processed/magnetic_data/`.
+1.  **Data Splitting:** The augmented training data is split by `record_id` into `train`, `dev`, and `test` sets (e.g., 98%/1%/1%).
+2.  **Sorting & Indexing:** Data is sorted by `record_id` and `seq_id` to prepare for time-series operations. The `seq_id` column is relied upon for temporal ordering.
+3.  **Log Transformations:** Applies `log(1+x)` normalization to highly skewed features.
+4.  **Advanced Time-Series Feature Engineering:** Calculates:
+    *   **Rolling Means/Stdevs:** (`USFLUX_log_roll_mean5`, etc.) to capture trends.
+    *   **Rate of Change:** (`TOTPOT_log_diff1`, etc.) to measure energy changes.
+    *   **Lag Features:** (`MEANSHR_lag3`, etc.) to provide short-term memory.
+5.  **Feature Selection & Saving:** Prunes the dataset to a curated list of features and saves the final `train`, `dev`, `test`, and `holdout_test` sets.
 
 **Output:**
-The final datasets consumed by the training scripts, located in:
+Final, model-ready datasets located in:
 ```
 data/processed/magnetic_data/
 ├── train/
@@ -167,7 +186,28 @@ data/processed/magnetic_data/
 ├── test/
 └── holdout_test/
 ```
-For a full list of the final 14 features and the justification for each, see `docs/Data_Processing_Report.md`.
+
+---
+
+## Data Augmentation Script
+
+### `magnetic_augmentor.py`
+
+**Purpose:**
+Takes the cleaned, preprocessed training data and applies a sophisticated augmentation and resampling strategy to combat severe class imbalance before feature engineering.
+
+**Workflow:**
+1.  **Calculates Distribution:** Determines the initial counts of each flare class (X, M, B, C, Q).
+2.  **Generates Synthetic Data:** For the rarest classes ('X', 'M'), it creates new, physically plausible time-series samples using:
+    - **Magnitude Warping:** Distorts the time series with a smooth, random curve.
+    - **Scaling:** Multiplies the entire time series by a random scalar.
+3.  **Oversamples:** For minority classes ('X', 'B', 'C'), it duplicates a fraction of the original samples to increase their weight.
+4.  **Undersamples:** For the majority class ('Q'), it randomly removes a large portion of samples to reduce its dominance.
+5.  **Replaces Data:** The script saves the new, balanced dataset to a temporary location and then replaces the original `preprocessed/train` directory.
+
+**Output:**
+The original `data/preprocessed/train/` directory is overwritten with a larger, more balanced dataset containing a mix of original, synthetic, and duplicated samples.
+
 
 ---
 
