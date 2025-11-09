@@ -1,23 +1,16 @@
-# Data Processing and Feature Engineering Report
+# Data Processing, Feature Engineering and Data Augmentation Report
 
 ## 1. Executive Summary
 
-This report details the complete preprocessing and feature engineering pipeline designed for the **Solar Flare Prediction Model**.  
-The pipeline operates on two primary datasets — the **magnetic parameter time-series data** from the **IEEE Big Data Cup 2020** and the **SDO/HMI image dataset** from complementary Kaggle sources.
+This report details the complete data pipeline designed for the **Solar Flare Prediction Model**, covering **preprocessing, data integrity correction, augmentation, and feature engineering**. The pipeline operates on the **magnetic parameter time-series data** from the **IEEE Big Data Cup 2020**.
 
-The magnetic dataset comprises **≈95 Parquet files (~5 GB)**, each containing solar active region (AR) magnetic field measurements over time, while the SDO image dataset provides multi-channel images of the solar surface. Together, these datasets form the basis for building predictive models for solar flare activity.
+The initial dataset, comprising **≈17 GB** across three training partitions, presented critical structural and statistical challenges that required a multi-stage solution.
 
-Exploratory Data Analysis (EDA) revealed critical structural and statistical issues in the raw magnetic data:
+*   **Data Integrity Crisis:** Exploratory analysis and initial processing runs revealed a severe data integrity issue: **over 40,000 `record_id`s were duplicated across the source partition files**. These were not simple duplicates but distinct time-series observations incorrectly assigned the same ID, causing records to have 120 time steps instead of the expected 60. This issue severely impacted over 35% of the rare 'X' and 'M' class flares.
+*   **Severe Class Imbalance:** The dataset is dominated by 'Flare Quiet' (Q) samples, with the critical 'X' class flares representing less than 0.2% of the data.
+*   **Statistical Challenges:** Key flux and energy parameters (`USFLUX`, `TOTPOT`) exhibited severe right-skew and strong multicollinearity.
 
-* **Structural Challenges:**  
-  - Non-unique DataFrame indices and a **panel (multi-sequence) structure**, where each `record_id` represents an independent time-series sequence.  
-  - Missing or inconsistent temporal ordering within certain groups.  
-
-* **Statistical Challenges:**  
-  - Severe **right-skew** in key flux and energy parameters (`USFLUX`, `TOTPOT`, etc.).  
-  - Strong **multicollinearity**, with correlation coefficients > 0.9 among clusters of related variables.
-
-The preprocessing pipeline — implemented with **Dask** for distributed and memory-efficient processing — addresses these challenges systematically and produces a **14-feature refined dataset**, ready for downstream modeling.
+The final pipeline, implemented with **Dask** for memory-efficient processing, systematically addresses these challenges. It first corrects the `record_id` collision bug, then applies a sophisticated augmentation strategy to rebalance the classes, and finally engineers a **14-feature refined dataset**, ready for downstream modeling.
 
 ---
 
@@ -33,12 +26,10 @@ The dataset consists of four large JSON files:
 - `test_4_5_data.json`
 
 Collectively, these amount to **≈17 GB** of time-series magnetic parameter data.  
-Each record corresponds to a unique solar active region observed by the **SDO/HMI instrument**, with associated physical parameters and a labeled flare class.
+Each record corresponds to a unique solar active region observed by the **SDO/HMI instrument**, with associated physical parameters and a labeled flare class. Note for this project I have not used `test_4_5_data.json` as it doesn't have any labels that i can use to test against.
 
 **Source:** [IEEE Big Data Cup 2020 – Solar Flare Forecasting Data](https://dmlab.cs.gsu.edu/solar/data/data-comp-2020/)  
 **Kaggle Mirror:** [Stealth Technologies – Solar Flares Dataset](https://www.kaggle.com/datasets/stealthtechnologies/solar-flares-dataset)
-
----
 
 ### 2.2 SDO/HMI Image Dataset
 
@@ -52,8 +43,6 @@ It can be obtained from:
 When downloading the SDO image dataset, the pipeline retrieves the same files **four times**, due to case variations in filenames (e.g., `image_001.FITS`, `IMAGE_001.FITS`, etc.).  
 As a result, users should **expect ~2.8 GB × 4 = ≈11.2 GB** of image data after full download.
 
----
-
 ### 2.3 Loader and Preprocessing Scripts
 
 * **`loaders/`**  
@@ -64,38 +53,62 @@ As a result, users should **expect ~2.8 GB × 4 = ≈11.2 GB** of image data aft
   - Generates a **metadata index** for the image dataset, linking each image to its corresponding magnetic record (`record_id`) and flare label.  
   - Produces structured metadata files used for efficient downstream model loading and alignment between image and magnetic data.
 
----
-
-## 3. Exploratory Data Analysis (EDA)
-
-EDA was conducted using a subset of the magnetic dataset and visualized via correlation matrices and feature distributions.
-
-- **Raw Correlation Matrix:**  
- ![Raw Correlation Matrix](https://raw.githubusercontent.com/Zen-Nightshade/Solar-Flare-Prediction/main/figures/magnetic_data_EDA/raw_plots/correlation_matrix.png)
-
-
-  The raw data exhibits heavy feature redundancy, with large clusters of features being highly correlated (e.g., `TOTUSJH`, `TOTBSQ`, and `USFLUX`).
-
-- **Processed Correlation Matrix:**  
-  ![Processed Correlation Matrix](https://raw.githubusercontent.com/Zen-Nightshade/Solar-Flare-Prediction/main/figures/magnetic_data_EDA/transformed_plots/correlation_matrix.png)
-
-  After transformation and selection, multicollinearity is substantially reduced, resulting in a more orthogonal feature space suitable for modeling.
-
-Additional figures and distribution plots (available in [this directory](https://github.com/Zen-Nightshade/Solar-Flare-Prediction/blob/main/figures/magnetic_data_EDA/)) further illustrate data normalization and feature distribution changes after processing.
 
 ---
 
-## 4. Processing Pipeline Overview
+### 3. Data Integrity Investigation and Correction
 
-Implemented in `process_magnetic_data.py`, the preprocessing pipeline follows a modular, multi-phase approach:
+Initial attempts to augment the data using `magnetic_augmentor.py` failed with shape mismatch errors (`ValueError: operands could not be broadcast together...`). This indicated that some records had 120 time steps instead of the expected 60, triggering a critical debugging and data validation phase.
 
-### **Phase 1 — Data Stabilization and Structuring**
-1. **Index Resetting** to remove duplicate indices.  
-2. **Sorting by `record_id`** to preserve time continuity.  
-3. **Sequence ID Creation (`seq_id`)** to explicitly index time steps within each sequence.
+### 3.1 The Debugging Journey
+
+1.  **Problem Identification:** The `magnetic_augmentor.py` script, which groups data by `record_id` to create synthetic samples, was the first to crash. This proved that the data integrity issue existed *before* any augmentation was attempted.
+2.  **Diagnostic Analysis:** A series of diagnostic scripts were developed to validate the preprocessed data:
+    *   `check_magnetic_record_counts.py`: Confirmed that **41,680 `record_id`s** in the preprocessed data had exactly 120 rows.
+    *   `check_corrupted_distribution.py`: Revealed that the corruption severely impacted the rare 'X' and 'M' classes. For instance, **87 'X'-class flares**—over a third of the total—were part of this corrupted set, making simple deletion an unacceptable option.
+3.  **Root Cause Discovery:** Analysis of the source JSON files revealed two key facts:
+    *   Any single line in a JSON file correctly contained exactly 60 time steps.
+    *   The `record_id` ranges across the training partition files **were not disjoint**. Specifically:
+        *   `partition1`: 1 to 77270
+        *   `partition2`: 77271 to 171037
+        *   `partition3`: **93768 to 136753** (This range significantly overlaps with `partition2`).
+    This confirmed that the `preprocess_2020.py` script, by processing each file independently, was correctly creating 60-row entries for the same `record_id` from different files. These were then combined by downstream Dask operations, leading to the 120-row corrupted records.
+
+### 3.2 The Solution: "Rename on Collision"
+
+The `preprocess_2020.py` script was fundamentally rewritten to solve this problem at the source. It now implements a **stateful "Rename on Collision"** strategy:
+1.  The script maintains a global set of all `record_id`s it has processed.
+2.  The first time an ID is encountered (e.g., from `partition1` or `partition2`), it is used as-is.
+3.  On any subsequent encounter of the same ID (e.g., from `partition3`), the script assumes it is a new, independent observation with a logging error. It assigns a **new, unique, sequential integer ID** (starting from 171038) to preserve the data while guaranteeing uniqueness.
+
+This correction ensures the preprocessed dataset is clean, with every record having a unique ID and exactly 60 time steps, forming a reliable foundation for all future steps.
+
+---
+
+## 4. Data Augmentation for Class Imbalance
+
+With a clean dataset, the severe class imbalance was addressed using the `magnetic_augmentor.py` script. A multi-step strategy was applied *only to the training set* before feature engineering.
+
+1.  **Synthetic Data Generation:** For the rarest classes ('X', 'M'), new, physically plausible samples were generated using:
+    *   **Magnitude Warping:** Multiplying the time series by a smooth, random curve to simulate variations in energy evolution.
+    *   **Scaling:** Multiplying the entire time series by a random scalar to simulate slightly stronger or weaker events.
+2.  **Naive Oversampling:** For minority classes ('X', 'B', 'C'), a fraction of the original samples were duplicated to increase their weight.
+3.  **Naive Undersampling:** For the majority 'Flare Quiet' (Q) class, a large portion of samples were randomly removed to reduce their dominance and decrease training time.
+
+This strategy drastically improved the class balance, reducing the ratio of the most common to rarest class from over **450-to-1** to approximately **9-to-1**, enabling the model to learn meaningful patterns from the minority classes.
+
+---
+
+## 5. Feature Engineering Pipeline (`process_magnetic_data.py`)
+
+The feature engineering pipeline operates on the **clean, augmented, and balanced** training data. It follows a modular, multi-phase approach:
+
+### **Phase 1 — Data Structuring**
+1.  **Data Splitting:** The augmented training data is first split by `record_id` into `train` (98%), `dev` (1%), and `test` (1%) sets for local validation.
+2.  **Sorting:** Data is sorted by `record_id` and the pre-existing `seq_id` to ensure correct temporal order for grouped operations.
 
 ### **Phase 2 — Foundational Transformations**
-- **Logarithmic Transformations** (`log(1+x)`) applied to right-skewed variables such as `TOTPOT`, `USFLUX`, and `PIL_LEN`.
+- **Logarithmic Transformations** (`log(1+x)`) are applied to right-skewed variables such as `TOTPOT` and `USFLUX`.
 
 ### **Phase 3 — Advanced Time-Series Feature Engineering**
 Group-wise operations on each `record_id` yield:
@@ -109,7 +122,7 @@ Group-wise operations on each `record_id` yield:
 
 ---
 
-## 5. Final Feature Set
+## 6. Final Feature Set
 
 | Original Column(s) | Final Feature | Status | Description |
 |--------------------|---------------|---------|-------------|
@@ -132,15 +145,14 @@ All other 28 raw parameters were excluded to minimize redundancy and ensure inte
 
 ---
 
-## 6. Deferred Operations: Scaling and Encoding
-
+## 7. Deferred Operations: Scaling and Encoding
 Two key preprocessing steps — **Feature Scaling** and **Categorical Encoding** — are **intentionally deferred** to the modeling phase (`train.py`).  
 This prevents **data leakage**, ensuring the model’s performance metrics remain valid.  
 Scaling and encoding must be **fitted on training data only** and reused consistently across validation and test splits.
 
 ---
 
-## 7. Storage and Split Strategy
+## 8. Storage and Split Strategy
 
 The processed data is stored under:
 ```
@@ -150,16 +162,16 @@ with partitions:
 - `train`
 - `dev`
 - `test`
-- `holdout_test`
 
 Each partition is independently processed to preserve isolation between data subsets.
 
 ---
 
-## 8. Conclusion
+## 9. Conclusion
 
-The magnetic data processing pipeline successfully transforms complex, high-dimensional, and correlated raw solar data into a **compact, interpretable, and model-ready dataset**.  
-The result is a 14-feature dataset enriched with meaningful temporal descriptors — trend, volatility, rate-of-change, and short-term memory — forming a robust foundation for solar flare prediction.
+The data processing pipeline successfully transforms a raw dataset with **critical integrity issues and severe class imbalance** into a compact, interpretable, and model-ready format. The debugging and correction of the source data's `record_id` collision bug was a critical, non-trivial step that salvaged over 35% of the rare flare samples. The subsequent augmentation strategy further enhanced the dataset, enabling robust model training.
+
+The final result is a 14-feature dataset enriched with meaningful temporal descriptors, forming a trustworthy foundation for solar flare prediction.
 
 The loader and SDO preprocessing components extend this ecosystem by integrating metadata and imagery, enabling multimodal analysis.  
 Researchers should **prepare for approximately 17 GB (magnetic data) + 11.2 GB (image data)** during full replication of the workflow.
